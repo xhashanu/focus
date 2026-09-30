@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+.venv/
+
+# Environment Variables & Secrets
+.env
+.env.local
+
+# SQLite Database
+*.db
+*.sqlite
+*.sqlite3
+focus.db
+
+# Media Storage & Temporary Files
+storage/temp/*
+!storage/temp/.gitkeep
+/tmp/
+
+# Logs & Celery
+*.log
+celerybeat-schedule
+celerybeat.pid
+
+# Streamlit
+.streamlit/
+
+# OS / Editor Files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
