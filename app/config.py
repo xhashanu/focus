@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     LARAVEL_API_URL: str = ""
     LARAVEL_API_TOKEN: str = ""
 
+    # Autonomous Publishing Mode
+    AUTO_PUBLISH: bool = False  # Set True for fully autonomous pipeline (no human review)
+
     # Streamlit & Client base URL
     FASTAPI_BASE_URL: str = "http://127.0.0.1:8000"
 

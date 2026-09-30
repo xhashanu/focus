@@ -1,12 +1,25 @@
+"""
+Celery Background Task — workers/tasks.py
+
+End-to-end news curation pipeline supporting two modes:
+  1. **Human-in-the-loop (default):** Download → Extract → Search → AI → Draft → Wait for review
+  2. **Autonomous (AUTO_PUBLISH=true):** Download → Extract → Search → AI Curator → Publish directly to production
+
+Mode is controlled by settings.AUTO_PUBLISH and can also be overridden per-task
+via the `auto_publish` keyword argument.
+"""
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from celery import shared_task
 from app.workers.celery_app import celery_app
+from app.config import settings
 from app.db.session import SessionLocal
 from app.models.draft import Draft, DraftStatus
 from app.services.media import media_service, MediaProcessingError
 from app.services.search import search_service
 from app.services.ai import ai_service
+from app.services.ai_curator import ai_curator
+from app.services.publisher import publisher, PublisherError
 
 logger = logging.getLogger(__name__)
 
@@ -19,17 +32,26 @@ logger = logging.getLogger(__name__)
     retry_backoff_max=600,
     retry_jitter=True,
 )
-def process_news_link(self, url: str) -> Dict[str, Any]:
-    """Execute the end-to-end media acquisition, context gathering, and AI news curation pipeline."""
+def process_news_link(self, url: str, auto_publish: Optional[bool] = None) -> Dict[str, Any]:
+    """Execute the end-to-end media acquisition, context gathering, and AI news curation pipeline.
+
+    Args:
+        url: The social media video URL to process.
+        auto_publish: Override settings.AUTO_PUBLISH for this specific task.
+                      None = use settings.AUTO_PUBLISH.
+    """
     task_id = self.request.id
-    logger.info("Executing process_news_link task %s for URL: %s", task_id, url)
+    should_auto_publish = auto_publish if auto_publish is not None else settings.AUTO_PUBLISH
+    mode = "AUTONOMOUS" if should_auto_publish else "HUMAN-REVIEW"
+    logger.info("Executing process_news_link task %s for URL: %s (mode=%s)", task_id, url, mode)
 
     # 1. Pipeline Start / Downloader
     self.update_state(
         state="PROGRESS",
         meta={
             "stage": "DOWNLOADING",
-            "progress": 15,
+            "progress": 10,
+            "mode": mode,
             "details": f"Acquiring video stream via yt-dlp from: {url}",
         },
     )
@@ -48,7 +70,8 @@ def process_news_link(self, url: str) -> Dict[str, Any]:
             state="PROGRESS",
             meta={
                 "stage": "EXTRACTING_MEDIA",
-                "progress": 35,
+                "progress": 25,
+                "mode": mode,
                 "details": "Extracting audio track and slicing representative keyframes...",
             },
         )
@@ -60,81 +83,28 @@ def process_news_link(self, url: str) -> Dict[str, Any]:
             state="PROGRESS",
             meta={
                 "stage": "SEARCHING_CONTEXT",
-                "progress": 55,
+                "progress": 40,
+                "mode": mode,
                 "details": "Reverse-searching keyframes on Google Lens to verify location and origin...",
             },
         )
         primary_keyframe = keyframes[0] if keyframes else video_path
         lens_context = search_service.search_keyframe_context(primary_keyframe)
 
-        # Step 4: Multimodal AI Generation
-        self.update_state(
-            state="PROGRESS",
-            meta={
-                "stage": "GENERATING_ARTICLE",
-                "progress": 75,
-                "details": "Synthesizing multimodal audio/video and Lens context into localized news draft...",
-            },
-        )
-        ai_article = ai_service.generate_article(
-            audio_path=audio_path,
-            video_path=video_path,
-            lens_context=lens_context,
-            source_url=url,
-        )
+        # =====================================================================
+        # BRANCHING POINT: Autonomous vs Human-Review
+        # =====================================================================
 
-        # Step 5: Save to SQLite Drafts
-        self.update_state(
-            state="PROGRESS",
-            meta={
-                "stage": "SAVING_DRAFT",
-                "progress": 90,
-                "details": "Validating and persisting draft in local database for human review...",
-            },
-        )
-
-        media_metadata = {
-            "video_path": video_path,
-            "audio_path": audio_path,
-            "keyframes": keyframes,
-        }
-
-        draft = Draft(
-            task_id=task_id,
-            source_url=url,
-            headline=ai_article.headline,
-            summary=ai_article.summary,
-            body_content=ai_article.body_content,
-            location=ai_article.location,
-            tags=ai_article.tags,
-            confidence_score=ai_article.confidence_score,
-            ai_notes=ai_article.ai_notes,
-            status=DraftStatus.PENDING,
-            media_paths=media_metadata,
-        )
-        db.add(draft)
-        db.commit()
-        db.refresh(draft)
-
-        result_payload = {
-            "draft_id": draft.id,
-            "status": "COMPLETED",
-            "headline": draft.headline,
-            "location": draft.location,
-            "confidence_score": draft.confidence_score,
-        }
-
-        self.update_state(
-            state="SUCCESS",
-            meta={
-                "stage": "COMPLETED",
-                "progress": 100,
-                "details": "News curation complete. Ready for human editorial review.",
-                "result": result_payload,
-            },
-        )
-        logger.info("Curation successfully finished for task %s, created draft #%d", task_id, draft.id)
-        return result_payload
+        if should_auto_publish:
+            return _autonomous_pipeline(
+                self, task_id, url, db,
+                audio_path, video_path, keyframes, lens_context,
+            )
+        else:
+            return _human_review_pipeline(
+                self, task_id, url, db,
+                audio_path, video_path, keyframes, lens_context,
+            )
 
     except Exception as exc:
         logger.error("Curation task %s failed: %s", task_id, exc)
@@ -170,3 +140,208 @@ def process_news_link(self, url: str) -> Dict[str, Any]:
 
     finally:
         db.close()
+
+
+# =============================================================================
+# Pipeline Branches
+# =============================================================================
+
+def _human_review_pipeline(
+    task, task_id, url, db,
+    audio_path, video_path, keyframes, lens_context,
+) -> Dict[str, Any]:
+    """Original flow: generate draft → persist for human editorial review."""
+
+    task.update_state(
+        state="PROGRESS",
+        meta={
+            "stage": "GENERATING_ARTICLE",
+            "progress": 65,
+            "mode": "HUMAN-REVIEW",
+            "details": "Synthesizing multimodal context into localized news draft...",
+        },
+    )
+    ai_article = ai_service.generate_article(
+        audio_path=audio_path,
+        video_path=video_path,
+        lens_context=lens_context,
+        source_url=url,
+    )
+
+    task.update_state(
+        state="PROGRESS",
+        meta={
+            "stage": "SAVING_DRAFT",
+            "progress": 90,
+            "mode": "HUMAN-REVIEW",
+            "details": "Persisting draft for human review...",
+        },
+    )
+
+    media_metadata = {
+        "video_path": video_path,
+        "audio_path": audio_path,
+        "keyframes": keyframes,
+    }
+
+    draft = Draft(
+        task_id=task_id,
+        source_url=url,
+        headline=ai_article.headline,
+        summary=ai_article.summary,
+        body_content=ai_article.body_content,
+        location=ai_article.location,
+        tags=ai_article.tags,
+        confidence_score=ai_article.confidence_score,
+        ai_notes=ai_article.ai_notes,
+        status=DraftStatus.PENDING,
+        media_paths=media_metadata,
+    )
+    db.add(draft)
+    db.commit()
+    db.refresh(draft)
+
+    result_payload = {
+        "draft_id": draft.id,
+        "status": "COMPLETED",
+        "mode": "HUMAN-REVIEW",
+        "headline": draft.headline,
+        "location": draft.location,
+        "confidence_score": draft.confidence_score,
+    }
+
+    task.update_state(
+        state="SUCCESS",
+        meta={
+            "stage": "COMPLETED",
+            "progress": 100,
+            "mode": "HUMAN-REVIEW",
+            "details": "News curation complete. Ready for human editorial review.",
+            "result": result_payload,
+        },
+    )
+    logger.info("Curation complete (HUMAN-REVIEW) for task %s → draft #%d", task_id, draft.id)
+    return result_payload
+
+
+def _autonomous_pipeline(
+    task, task_id, url, db,
+    audio_path, video_path, keyframes, lens_context,
+) -> Dict[str, Any]:
+    """Autonomous flow: AI Curator → Publisher → Production database (no human review)."""
+
+    # Step 4a: AI Curator produces CuratedArticlePayload
+    task.update_state(
+        state="PROGRESS",
+        meta={
+            "stage": "AI_CURATING",
+            "progress": 55,
+            "mode": "AUTONOMOUS",
+            "details": "AI Curator generating production-ready article with full schema compliance...",
+        },
+    )
+    curated_article = ai_curator.curate(
+        audio_path=audio_path,
+        video_path=video_path,
+        keyframe_paths=keyframes,
+        lens_context=lens_context,
+        source_url=url,
+    )
+
+    # Step 4b: Save a local draft record for audit trail
+    task.update_state(
+        state="PROGRESS",
+        meta={
+            "stage": "SAVING_AUDIT_DRAFT",
+            "progress": 70,
+            "mode": "AUTONOMOUS",
+            "details": "Saving local audit trail before publishing...",
+        },
+    )
+    media_metadata = {
+        "video_path": video_path,
+        "audio_path": audio_path,
+        "keyframes": keyframes,
+    }
+    draft = Draft(
+        task_id=task_id,
+        source_url=url,
+        headline=curated_article.title,
+        summary=curated_article.summarized_description,
+        body_content=curated_article.description,
+        location=curated_article.location_name,
+        tags=curated_article.tag_names,
+        confidence_score=curated_article.confidence_score,
+        ai_notes=curated_article.ai_notes,
+        status=DraftStatus.PENDING,
+        media_paths=media_metadata,
+    )
+    db.add(draft)
+    db.commit()
+    db.refresh(draft)
+
+    # Step 5: Autonomous Publishing to Production
+    task.update_state(
+        state="PROGRESS",
+        meta={
+            "stage": "PUBLISHING",
+            "progress": 85,
+            "mode": "AUTONOMOUS",
+            "details": "Publishing to production Laravel database via REST API...",
+        },
+    )
+    try:
+        publish_result = publisher.publish(
+            article=curated_article,
+            primary_image_path=keyframes[0] if keyframes else None,
+            extra_image_paths=keyframes[1:] if len(keyframes) > 1 else None,
+            source_url=url,
+        )
+
+        # Mark draft as approved/published
+        draft.status = DraftStatus.APPROVED
+        db.commit()
+
+        result_payload = {
+            "draft_id": draft.id,
+            "status": "PUBLISHED",
+            "mode": "AUTONOMOUS",
+            "headline": curated_article.title,
+            "location": curated_article.location_name,
+            "confidence_score": curated_article.confidence_score,
+            "category": curated_article.category_name,
+            "urgency": curated_article.urgency,
+            "publish_result": publish_result,
+        }
+
+        task.update_state(
+            state="SUCCESS",
+            meta={
+                "stage": "PUBLISHED",
+                "progress": 100,
+                "mode": "AUTONOMOUS",
+                "details": f"Article published to production. news_id={publish_result.get('news_id')}",
+                "result": result_payload,
+            },
+        )
+        logger.info(
+            "Autonomous publishing complete for task %s → news_id=%s, draft #%d",
+            task_id, publish_result.get("news_id"), draft.id,
+        )
+        return result_payload
+
+    except PublisherError as pub_exc:
+        logger.error("Publishing failed for task %s: %s", task_id, pub_exc)
+        draft.status = DraftStatus.FAILED
+        draft.error_message = f"Publishing failed: {pub_exc}"
+        db.commit()
+
+        # Even if publishing fails, the draft is still saved locally
+        return {
+            "draft_id": draft.id,
+            "status": "PUBLISH_FAILED",
+            "mode": "AUTONOMOUS",
+            "headline": curated_article.title,
+            "error": str(pub_exc),
+            "details": "Article curated but publishing to production failed. Draft saved locally for retry.",
+        }

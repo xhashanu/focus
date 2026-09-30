@@ -23,13 +23,18 @@ def curate_video_link(request: CurateRequest) -> CurateResponse:
         )
 
     try:
-        task = process_news_link.delay(url_str)
-        logger.info("Dispatched curation task %s for URL: %s", task.id, url_str)
+        task = process_news_link.delay(url_str, auto_publish=request.auto_publish)
+        logger.info("Dispatched curation task %s for URL: %s (auto_publish=%s)", task.id, url_str, request.auto_publish)
+        effective_mode = "AUTONOMOUS" if (request.auto_publish is True or (request.auto_publish is None and False)) else "HUMAN-REVIEW"
+        from app.config import settings
+        if request.auto_publish is None:
+            effective_mode = "AUTONOMOUS" if settings.AUTO_PUBLISH else "HUMAN-REVIEW"
         return CurateResponse(
             task_id=task.id,
             status="ACCEPTED",
-            message="Media acquisition and AI news curation pipeline dispatched successfully.",
+            message=f"Media acquisition and AI news curation pipeline dispatched ({effective_mode}).",
             source_url=url_str,
+            mode=effective_mode,
         )
     except Exception as exc:
         logger.error("Failed to enqueue curation task for %s: %s", url_str, exc)

@@ -229,9 +229,12 @@ def fetch_draft_detail(base_url: str, draft_id: int) -> Optional[Dict[str, Any]]
         pass
     return None
 
-def trigger_curation(base_url: str, url: str) -> Optional[str]:
+def trigger_curation(base_url: str, url: str, auto_publish: Optional[bool] = None) -> Optional[str]:
     try:
-        res = requests.post(f"{base_url}/api/v1/curate", json={"url": url}, timeout=10)
+        payload = {"url": url}
+        if auto_publish is not None:
+            payload["auto_publish"] = auto_publish
+        res = requests.post(f"{base_url}/api/v1/curate", json=payload, timeout=10)
         if res.status_code == 202:
             return res.json().get("task_id")
     except Exception as exc:
@@ -386,12 +389,19 @@ with tab_live:
 
     url_input_val = preset_url if preset_url else ""
 
-    col_inp, col_act = st.columns([5, 2], gap="medium")
+    col_inp, col_mode, col_act = st.columns([5, 3, 2], gap="medium")
     with col_inp:
         video_url = st.text_input(
             "Video URL",
             value=url_input_val,
             placeholder="Paste URL (e.g. https://www.instagram.com/reel/...)",
+            label_visibility="collapsed",
+        )
+    with col_mode:
+        mode_choice = st.selectbox(
+            "Curation Mode",
+            options=["🚀 Fully Autonomous (Live DB)", "✍️ Editorial Review (Draft)"],
+            index=0,
             label_visibility="collapsed",
         )
     with col_act:
@@ -401,11 +411,13 @@ with tab_live:
         if not video_url or not video_url.startswith("http"):
             st.error("Please enter a valid HTTP/HTTPS social media link.")
         else:
-            task_id = trigger_curation(api_url, video_url)
+            is_auto = mode_choice.startswith("🚀")
+            task_id = trigger_curation(api_url, video_url, auto_publish=is_auto)
             if task_id:
                 st.session_state.active_task_id = task_id
                 st.session_state.task_logs = [
                     f"[{datetime.now().strftime('%H:%M:%S')}] Task dispatched with ID: {task_id}",
+                    f"[{datetime.now().strftime('%H:%M:%S')}] Mode: {'AUTONOMOUS (Live DB Publish)' if is_auto else 'HUMAN-REVIEW (Editorial Draft)'}",
                     f"[{datetime.now().strftime('%H:%M:%S')}] Target Source: {video_url}",
                 ]
                 st.rerun()
@@ -459,15 +471,33 @@ with tab_live:
                 else:
                     return "pipeline-step", "⚪"
 
+            # Check execution mode from task metadata
+            task_mode = task_info.get("mode", "")
+            is_autonomous = "AUTONOMOUS" in task_mode or stage in ("AI_CURATING", "SAVING_AUDIT_DRAFT", "PUBLISHING", "PUBLISHED")
+
             s1_cls, s1_ico = get_step_class("DOWNLOADING", stage, prog, 15)
             s2_cls, s2_ico = get_step_class("EXTRACTING_MEDIA", stage, prog, 35)
             s3_cls, s3_ico = get_step_class("SEARCHING_CONTEXT", stage, prog, 55)
-            s4_cls, s4_ico = get_step_class("GENERATING_ARTICLE", stage, prog, 75)
-            s5_cls, s5_ico = get_step_class("SAVING_DRAFT", stage, prog, 90)
+
+            if is_autonomous:
+                s4_cls, s4_ico = get_step_class("AI_CURATING", stage, prog, 70)
+                s5_cls, s5_ico = get_step_class("PUBLISHING", stage, prog, 85)
+                s4_label = "<strong>4. AI Curation:</strong> Gemini 1.5 Pro structured schema hydration"
+                s5_label = "<strong>5. Autonomous Publishing:</strong> Laravel MySQL API insertion & alerts"
+                mode_badge = "<span class='badge badge-published' style='margin-left: 8px;'>AUTONOMOUS</span>"
+            else:
+                s4_cls, s4_ico = get_step_class("GENERATING_ARTICLE", stage, prog, 75)
+                s5_cls, s5_ico = get_step_class("SAVING_DRAFT", stage, prog, 90)
+                s4_label = "<strong>4. AI Generation:</strong> Gemini multimodal localized synthesis"
+                s5_label = "<strong>5. Database Persistence:</strong> SQLite review queue storage"
+                mode_badge = "<span class='badge badge-pending' style='margin-left: 8px;'>HUMAN-REVIEW</span>"
 
             stages_html = f"""
             <div class="glass-card" style="padding: 16px;">
-                <h4 style="margin-top: 0; margin-bottom: 14px;">Pipeline Stages</h4>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+                    <h4 style="margin: 0;">Pipeline Stages</h4>
+                    {mode_badge}
+                </div>
                 <div class="{s1_cls}">
                     <span style="font-size: 1.2rem; margin-right: 12px;">{s1_ico}</span>
                     <div><strong>1. Stream Acquisition:</strong> yt-dlp video bypass</div>
@@ -482,11 +512,11 @@ with tab_live:
                 </div>
                 <div class="{s4_cls}">
                     <span style="font-size: 1.2rem; margin-right: 12px;">{s4_ico}</span>
-                    <div><strong>4. AI Generation:</strong> Gemini multimodal localized synthesis</div>
+                    <div>{s4_label}</div>
                 </div>
                 <div class="{s5_cls}">
                     <span style="font-size: 1.2rem; margin-right: 12px;">{s5_ico}</span>
-                    <div><strong>5. Database Persistence:</strong> SQLite review queue storage</div>
+                    <div>{s5_label}</div>
                 </div>
             </div>
             """
@@ -511,14 +541,26 @@ with tab_live:
                 draft_id = result_payload.get("draft_id")
                 st.session_state.last_created_draft_id = draft_id
                 st.session_state.selected_draft_id = draft_id
+                res_mode = result_payload.get("mode", "")
 
-                status_banner.success(
-                    f"🎉 **Curation Complete!** Created Draft **#{draft_id}**: _{result_payload.get('headline')}_"
-                )
+                if res_mode == "AUTONOMOUS":
+                    pub_res = result_payload.get("publish_result", {})
+                    news_id = pub_res.get("news_id", "LIVE")
+                    status_banner.success(
+                        f"🚀 **Published Autonomously to Production!** News ID: **#{news_id}** | Headline: _{result_payload.get('headline')}_"
+                    )
+                    st.info(
+                        f"**Category:** {result_payload.get('category')} &nbsp;|&nbsp; **Location:** {result_payload.get('location')} &nbsp;|&nbsp; **Urgency:** {result_payload.get('urgency')} &nbsp;|&nbsp; **Audit Draft:** #{draft_id}"
+                    )
+                else:
+                    status_banner.success(
+                        f"🎉 **Curation Complete!** Created Draft **#{draft_id}**: _{result_payload.get('headline')}_"
+                    )
 
                 col_btn_rev, _ = st.columns([2, 3])
                 with col_btn_rev:
-                    if st.button("👉 Open in Editorial Review Desk", type="primary", use_container_width=True):
+                    target_label = "👉 Open in Editorial Review Desk" if res_mode != "AUTONOMOUS" else "👉 View Audit Record"
+                    if st.button(target_label, type="primary", use_container_width=True):
                         st.session_state.active_task_id = None
                         st.rerun()
 
