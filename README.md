@@ -369,26 +369,18 @@ AUTO_PUBLISH=False
 
 > **💡 Tip:** Both NVIDIA NIM and SerpApi offer free API keys. You can also update keys live from the Streamlit sidebar without restarting any services.
 
-### 4. Start the Application Services
+### 4. Start the Application Services (Single Command)
 
-Open three terminal windows:
+We have provided a unified startup script that automatically launches the **FastAPI Backend**, **Celery Worker**, and **Streamlit Studio** all at once in a single terminal.
 
-**Terminal 1 — Celery Background Worker**:
 ```bash
-py -m celery -A app.workers.celery_app worker --loglevel=info -P solo
+py start.py
 ```
 
-**Terminal 2 — FastAPI Backend**:
-```bash
-py -m uvicorn app.main:app --reload --port 8000
-```
-Interactive API docs available at: `http://127.0.0.1:8000/docs`
+- **Streamlit Studio**: `http://localhost:8501`
+- **FastAPI Interactive Docs**: `http://127.0.0.1:8000/docs`
 
-**Terminal 3 — Streamlit Newsroom Studio**:
-```bash
-py -m streamlit run frontend/app.py --server.port 8501
-```
-Access the studio at: `http://localhost:8501`
+*(To shut down the entire pipeline, simply press `Ctrl+C` in the terminal).*
 
 ---
 
