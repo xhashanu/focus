@@ -11,8 +11,9 @@ class Settings(BaseSettings):
     # SQLite Database
     DATABASE_URL: str = "sqlite:///./focus.db"
 
-    # Celery & Redis
-    REDIS_URL: str = "redis://localhost:6379/0"
+    # Celery Broker & Backend (SQLite for zero-dependency local dev)
+    CELERY_BROKER_URL: str = "sqla+sqlite:///./celery_broker.sqlite"
+    CELERY_RESULT_BACKEND: str = "db+sqlite:///./celery_backend.sqlite"
 
     # Media Storage
     STORAGE_TEMP_DIR: str = "./storage/temp"

@@ -322,7 +322,6 @@ py -m streamlit run frontend/app.py --server.port 8501
 ### 1. Prerequisites
 - **Python 3.11+**
 - **FFmpeg**: Must be installed and accessible on system `PATH`
-- **Redis Server**: Running locally or via Docker (`docker run -p 6379:6379 redis:alpine`)
 
 ### 2. Environment Setup
 ```bash

@@ -490,30 +490,7 @@ with st.sidebar:
         st.rerun()
 
 
-# ==============================================================================
-# Header
-# ==============================================================================
-st.markdown(
-    f"""
-    <div class="glass-header">
-        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
-            <div>
-                <h1 style="margin: 0; font-size: 2rem; font-weight: 800;">
-                    AI News Command Center
-                </h1>
-                <p style="margin: 8px 0 0 0; color: var(--text-dim); font-size: 0.92rem;">
-                    Submit any video link — YouTube, Instagram, TikTok, X, or any URL — and watch the AI pipeline transform it into publication-ready news.
-                </p>
-            </div>
-            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                <span class="badge badge-processing">{chosen_model}</span>
-                <span class="badge badge-pending">Strict DB Isolation</span>
-            </div>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+
 
 # ==============================================================================
 # Main Tabs
@@ -1108,7 +1085,7 @@ with tab_diag:
     with col_health:
         st.markdown("#### Service Health")
         if diag_stats:
-            st.json(diag_stats)
+            st.code(json.dumps(diag_stats, indent=2), language="json")
         else:
             st.error("Cannot reach backend.")
 
