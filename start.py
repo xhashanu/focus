@@ -1,8 +1,19 @@
 import subprocess
 import sys
 import time
+import shutil
+
+def check_dependencies():
+    if not shutil.which("ffmpeg"):
+        print("❌ ERROR: FFmpeg is not installed or not in your system PATH.")
+        print("FFmpeg is strictly required for yt-dlp to merge video formats and extract audio.")
+        print("\nTo fix this on Windows, run this in a new terminal as Administrator:")
+        print("    winget install Gyan.FFmpeg")
+        print("Then restart this terminal and run `py start.py` again.")
+        sys.exit(1)
 
 def main():
+    check_dependencies()
     print("🚀 Starting Focus AI News Command Center...")
     print("===========================================")
     
