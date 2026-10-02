@@ -6,12 +6,14 @@
 [![Redis](https://img.shields.io/badge/Redis-Queue-DC382D.svg?logo=redis)](https://redis.io)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.35.0-FF4B4B.svg?logo=streamlit)](https://streamlit.io)
 [![Pydantic v2](https://img.shields.io/badge/Pydantic-2.0+-E92063.svg?logo=pydantic)](https://docs.pydantic.dev)
+[![NVIDIA NIM](https://img.shields.io/badge/NVIDIA-Nemotron--3--Ultra-76B900.svg?logo=nvidia)](https://build.nvidia.com/nvidia/nemotron-3-ultra-550b-a55b)
+[![SerpApi](https://img.shields.io/badge/SerpApi-Google%20Lens-4285F4.svg?logo=google)](https://serpapi.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **Focus** is an end-to-end, asynchronous media intelligence pipeline that transforms unstructured social media video clips (from **Instagram Reels**, **TikTok**, and **X / Twitter**) into fully verified, localized, SEO-optimized news articles and broadcasts them to production news mobile apps and websites.
 
 The engine supports two operational modes:
-1. 🚀 **Fully Autonomous Publishing**: Zero human intervention. Multimodal extraction, reverse visual verification via Google Lens, Gemini 1.5 Pro structured schema hydration, taxonomy auto-resolution, and immediate transactional publishing to production.
+1. 🚀 **Fully Autonomous Publishing**: Zero human intervention. Multimodal extraction, reverse visual verification via Google Lens, AI-powered structured schema hydration (NVIDIA Nemotron-3-Ultra or Gemini 1.5 Pro — switchable from the dashboard), taxonomy auto-resolution, and immediate transactional publishing to production.
 2. ✍️ **Human-in-the-Loop Editorial Desk**: Interactive internal Streamlit workspace for journalists and editors to inspect evidence, preview audio/keyframes, refine content, and approve publication with one click.
 
 ---
@@ -56,7 +58,9 @@ The engine supports two operational modes:
              +--------------------------------+--------------------------------+
                                               |
                                               v
-                              [ Gemini 1.5 Pro AI Curator ]
+                          [ AI Curator (Switchable Engine) ]
+                     - NVIDIA Nemotron-3-Ultra-550B (Default)
+                     - Gemini 1.5 Pro (Fallback/Alternative)
                         - Structured CuratedArticlePayload Output
                         - JSON-LD NewsArticle Schema Markup
                         - Slug Generation & ≤ 191 Char Summaries
@@ -91,14 +95,16 @@ The engine supports two operational modes:
 
 ## ⚡ Key Features
 
+- **Dual LLM Engine with Dashboard Switcher**: Choose between **NVIDIA Nemotron-3-Ultra-550B** (free via NIM API) and **Google Gemini 1.5 Pro** directly from the Streamlit sidebar. The active engine is shown in real-time badges and can be switched per-request or globally.
 - **Multimodal Video Processing**: Uses `yt-dlp` with spoofed mobile user-agents to bypass social platform scraping walls, and `ffmpeg` to extract audio tracks and representative keyframe bursts.
-- **Reverse Visual Geolocation**: Integrates with SerpApi Google Lens to cross-reference keyframes against global visual databases, pinpointing real-world locations, landmarks, and contextual corroboration.
+- **Reverse Visual Geolocation**: Integrates with [SerpApi Google Lens](https://serpapi.com/manage-api-key) to cross-reference keyframes against global visual databases, pinpointing real-world locations, landmarks, and contextual corroboration.
 - **Production MySQL Schema Alignment**: Models strictly mirror the CodeCanyon Laravel news schema (`127_0_0_1.sql`), ensuring zero payload transformation issues when inserting into `tbl_news`, `tbl_category`, `tbl_subcategory`, `tbl_tag`, `tbl_location`, `tbl_news_image`, `tbl_breaking_news`, `tbl_notifications`, and `video_shorts`.
 - **Automatic Taxonomy Resolution**: Find-or-create workflow for categories, subcategories, tags (resolved to comma-separated ID strings, e.g. `"1,5,12"`), and geographic locations.
 - **SEO & Structured Data Automation**: Generates clean, URL-safe slugs, meta descriptions, and Google-compliant JSON-LD `NewsArticle` schema markup.
 - **Urgency-Driven Publishing**: Automatically classifies stories as `normal`, `high`, or `critical`. High/critical events trigger `tbl_breaking_news` entries and mobile push notifications (`tbl_notifications`).
 - **Shorts / Quick News Detection**: Videos under 60 seconds are formatted into `video_shorts` and flagged with `is_short_news=1`.
 - **Live Worker Polling**: Streamlit frontend polls Celery task states in real-time, displaying a dynamic 5-stage progress stepper and live execution logs.
+- **Reasoning Token Stripping**: NVIDIA Nemotron models may emit `<think>...</think>` reasoning traces; these are automatically stripped before Pydantic validation, ensuring clean JSON parsing.
 
 ---
 
@@ -210,10 +216,14 @@ focus/
 
 ### 2. AI Curation Engine ([`app/services/ai_curator.py`](file:///c:/Users/sanan/OneDrive/Desktop/focus/app/services/ai_curator.py))
 - **`CURATOR_SYSTEM_PROMPT`**: Enforces strict output compliance matching `CuratedArticlePayload`.
+- **Dual LLM Provider Support**:
+  - **`nvidia_nemotron`** (default): Calls NVIDIA NIM API (`https://integrate.api.nvidia.com/v1/chat/completions`) with model `nvidia/nemotron-3-ultra-550b-a55b`. Reasoning tokens (`<think>...</think>`) are auto-stripped.
+  - **`gemini`**: Calls Google Gemini 1.5 Pro via `google.generativeai` SDK.
 - **Multi-Tier Execution Fallback**:
-  1. Google Antigravity Agent SDK (Local runtime).
-  2. `google.generativeai` Gemini 1.5 Pro API.
+  1. Selected LLM provider (NVIDIA Nemotron or Gemini).
+  2. Automatic fallback to the alternate provider on failure.
   3. Offline development mock with full schema validation for local testing.
+- **Provider Selection**: Controlled via `DEFAULT_LLM_PROVIDER` env var, dashboard sidebar toggle, or per-request `llm_provider` parameter.
 
 ### 3. Media Processing Pipeline ([`app/services/media.py`](file:///c:/Users/sanan/OneDrive/Desktop/focus/app/services/media.py))
 - **`download_video(url)`**: Uses `yt-dlp` with randomized user-agents and format selection to acquire raw MP4 streams.
@@ -234,20 +244,24 @@ py -m streamlit run frontend/app.py --server.port 8501
 ```
 
 ### Studio Features:
-1. **Live Pipeline & Ingestion Monitor (Tab 1)**:
+1. **Sidebar — AI Engine Switcher & API Credentials**:
+   - **Active Model Switcher**: Radio toggle between `🤖 NVIDIA Nemotron` and `🧠 Gemini 1.5 Pro` with a quick-switch button. The selected engine is passed to every pipeline invocation.
+   - **API Credentials Manager**: Expandable panel to view/update SerpApi, NVIDIA, and Gemini API keys live — with direct links to get free keys.
+2. **Live Pipeline & Ingestion Monitor (Tab 1)**:
    - Paste video URLs or select quick demo presets (Instagram Reel, TikTok, X clip).
    - Toggle **Curation Mode**:
      - `🚀 Fully Autonomous (Live DB)`: Publishes directly to production.
      - `✍️ Editorial Review (Draft)`: Generates draft for editorial review.
-   - Live visual step tracker across all 5 pipeline stages.
+   - **AI Engine** dropdown per-ingestion: Override the global engine for individual jobs.
+   - Live visual step tracker across all 5 pipeline stages, branded with the active engine.
    - Embedded streaming terminal displaying real-time worker logs.
-2. **Editorial Desk & Approval Panel (Tab 2)**:
+3. **Editorial Desk & Approval Panel (Tab 2)**:
    - Split-screen workspace: Left panel shows keyframe carousel, embedded audio player, and Lens evidence; right panel offers headline, category, location, and HTML body editors.
    - Dual preview: HTML source editor and live mobile app simulation preview.
    - Action bar: Save edits, reject, or approve & push live to Laravel.
-3. **Published Articles Archive (Tab 3)**:
+4. **Published Articles Archive (Tab 3)**:
    - Searchable history of all articles with live post IDs, timestamps, and categories.
-4. **System Diagnostics (Tab 4)**:
+5. **System Diagnostics (Tab 4)**:
    - Connection status, SQLite draft counts, storage disk usage, and one-click media cache cleaner.
 
 ---
@@ -295,8 +309,10 @@ py -m streamlit run frontend/app.py --server.port 8501
 - **`POST /api/v1/drafts/{id}/publish`**: Manually approve and push draft to Laravel.
 - **`DELETE /api/v1/drafts/{id}`**: Reject draft and purge local scratch media.
 
-### System Diagnostics
-- **`GET /api/v1/system/stats`**: Backend health, database counts, and storage metrics.
+### System Configuration & Diagnostics
+- **`GET /api/v1/system/config`**: Retrieve current API key status (masked) and active LLM provider.
+- **`POST /api/v1/system/config`**: Dynamically update API keys (`serpapi_api_key`, `nvidia_api_key`, `gemini_api_key`) and `default_llm_provider` at runtime without restarting.
+- **`GET /api/v1/system/stats`**: Backend health, database counts, active LLM provider, and storage metrics.
 - **`POST /api/v1/system/cleanup`**: Delete orphaned temporary media files.
 
 ---
@@ -330,12 +346,28 @@ cp .env.example .env
 ```
 Key settings:
 ```ini
+# Search & Visual Geolocation (free: https://serpapi.com/manage-api-key)
 SERPAPI_API_KEY="your_serpapi_key"
+
+# LLM Provider: "nvidia_nemotron" (default) or "gemini"
+DEFAULT_LLM_PROVIDER="nvidia_nemotron"
+
+# NVIDIA NIM API (free: https://build.nvidia.com/nvidia/nemotron-3-ultra-550b-a55b)
+NVIDIA_API_KEY="your_nvidia_api_key"
+NVIDIA_BASE_URL="https://integrate.api.nvidia.com/v1"
+NVIDIA_MODEL="nvidia/nemotron-3-ultra-550b-a55b"
+
+# Google Gemini (alternative LLM)
 GEMINI_API_KEY="your_gemini_api_key"
+
+# Laravel Production API
 LARAVEL_API_URL="https://your-news-admin-domain.com/api"
 LARAVEL_API_TOKEN="your_secure_bearer_token"
+
 AUTO_PUBLISH=False
 ```
+
+> **💡 Tip:** Both NVIDIA NIM and SerpApi offer free API keys. You can also update keys live from the Streamlit sidebar without restarting any services.
 
 ### 4. Start the Application Services
 

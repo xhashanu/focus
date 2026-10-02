@@ -23,6 +23,8 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import httpx
+
 from app.config import settings
 from app.schemas.schema_models import CuratedArticlePayload
 
@@ -125,12 +127,64 @@ class AICuratorService:
 
     @staticmethod
     def _clean_json_response(text: str) -> str:
-        """Strip markdown code fences and extract raw JSON."""
+        """Strip reasoning traces, markdown code fences, and extract raw JSON."""
         cleaned = text.strip()
+        # Remove reasoning traces such as <think>...</think> if present
+        cleaned = re.sub(r"<think>[\s\S]*?</think>", "", cleaned, flags=re.DOTALL).strip()
         match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned)
         if match:
             return match.group(1).strip()
+        json_match = re.search(r"(\{[\s\S]*\})", cleaned)
+        if json_match:
+            return json_match.group(1).strip()
         return cleaned
+
+    def _call_nvidia_nemotron(
+        self,
+        user_prompt: str,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ) -> Optional[CuratedArticlePayload]:
+        """Call NVIDIA NIM API (nemotron-3-ultra-550b-a55b) via OpenAI-compatible endpoint."""
+        key = api_key or settings.NVIDIA_API_KEY
+        if not key:
+            logger.info("NVIDIA_API_KEY not configured.")
+            return None
+
+        url = (base_url or settings.NVIDIA_BASE_URL).rstrip("/") + "/chat/completions"
+        target_model = model or settings.NVIDIA_MODEL
+
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+        payload = {
+            "model": target_model,
+            "messages": [
+                {"role": "system", "content": CURATOR_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.2,
+            "top_p": 0.95,
+            "max_tokens": 4096,
+            "stream": False,
+        }
+
+        try:
+            logger.info("Calling NVIDIA NIM API (%s)...", target_model)
+            with httpx.Client(timeout=60.0) as client:
+                resp = client.post(url, headers=headers, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                raw_text = data["choices"][0]["message"]["content"]
+                cleaned = self._clean_json_response(raw_text)
+                return CuratedArticlePayload.model_validate_json(cleaned)
+        except Exception as exc:
+            logger.warning("NVIDIA Nemotron API call failed: %s", exc)
+            return None
 
     def curate(
         self,
@@ -139,10 +193,19 @@ class AICuratorService:
         keyframe_paths: Optional[List[str]],
         lens_context: Dict[str, Any],
         source_url: str,
+        provider: Optional[str] = None,
     ) -> CuratedArticlePayload:
-        """Run the AI curation pipeline and return a validated payload."""
-
+        """Run the AI curation pipeline with the selected LLM provider and return a validated payload."""
         user_prompt = self._build_prompt(lens_context, source_url)
+        active_provider = (provider or settings.DEFAULT_LLM_PROVIDER).lower()
+
+        # If NVIDIA Nemotron is chosen or active default
+        if "nvidia" in active_provider or "nemotron" in active_provider:
+            result = self._call_nvidia_nemotron(user_prompt)
+            if result:
+                logger.info("Successfully curated article via NVIDIA Nemotron.")
+                return result
+            logger.warning("NVIDIA Nemotron unavailable or failed; falling back to Gemini / Antigravity...")
 
         # Attempt Antigravity SDK
         try:
@@ -187,6 +250,12 @@ class AICuratorService:
                 return CuratedArticlePayload.model_validate_json(cleaned)
         except Exception as exc:
             logger.warning("Gemini API error: %s", exc)
+
+        # If Gemini was primary and failed, try NVIDIA Nemotron before dev fallback
+        if "nvidia" not in active_provider:
+            result = self._call_nvidia_nemotron(user_prompt)
+            if result:
+                return result
 
         # Development fallback
         logger.warning("Using development fallback for CuratedArticlePayload.")

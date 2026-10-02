@@ -8,6 +8,10 @@ class CurateRequest(BaseModel):
         default=None,
         description="Override autonomous publishing. True = publish directly to production; False = draft for human review; None = use system default.",
     )
+    llm_provider: Optional[str] = Field(
+        default=None,
+        description="LLM provider: 'nvidia_nemotron' or 'gemini'. None = use system default.",
+    )
 
 
 class CurateResponse(BaseModel):
@@ -16,4 +20,5 @@ class CurateResponse(BaseModel):
     message: str = Field(default="Curation pipeline task dispatched", description="Human-readable status message")
     source_url: str = Field(..., description="The submitted video URL")
     mode: str = Field(default="DEFAULT", description="Execution mode: AUTONOMOUS or HUMAN-REVIEW")
+    llm_provider: Optional[str] = Field(default=None, description="Selected LLM provider")
 

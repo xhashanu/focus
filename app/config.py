@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     # External APIs
     SERPAPI_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
+    NVIDIA_API_KEY: str = ""
+    NVIDIA_BASE_URL: str = "https://integrate.api.nvidia.com/v1"
+    NVIDIA_MODEL: str = "nvidia/nemotron-3-ultra-550b-a55b"
+    DEFAULT_LLM_PROVIDER: str = "nvidia_nemotron"  # "nvidia_nemotron" | "gemini"
 
     # Live Laravel Integration (HTTP Webhook)
     LARAVEL_API_URL: str = ""

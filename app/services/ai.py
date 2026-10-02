@@ -3,6 +3,7 @@ import logging
 import os
 import re
 from typing import Dict, Any, Optional
+import httpx
 from app.config import settings
 from app.schemas.ai_article import AIArticleOutput
 
@@ -33,12 +34,53 @@ class AIService:
         self.api_key = api_key
 
     def _clean_json_response(self, text: str) -> str:
-        """Strip markdown code fences if present."""
+        """Strip reasoning traces and markdown code fences."""
         cleaned = text.strip()
+        cleaned = re.sub(r"<think>[\s\S]*?</think>", "", cleaned, flags=re.DOTALL).strip()
         match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned)
         if match:
             return match.group(1).strip()
+        json_match = re.search(r"(\{[\s\S]*\})", cleaned)
+        if json_match:
+            return json_match.group(1).strip()
         return cleaned
+
+    def _call_nvidia_nemotron(self, prompt: str) -> Optional[AIArticleOutput]:
+        """Call NVIDIA NIM API (nemotron-3-ultra-550b-a55b) via OpenAI-compatible endpoint."""
+        key = settings.NVIDIA_API_KEY
+        if not key:
+            return None
+
+        url = settings.NVIDIA_BASE_URL.rstrip("/") + "/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        payload = {
+            "model": settings.NVIDIA_MODEL,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.2,
+            "top_p": 0.95,
+            "max_tokens": 4096,
+            "stream": False,
+        }
+
+        try:
+            logger.info("Calling NVIDIA NIM API (%s)...", settings.NVIDIA_MODEL)
+            with httpx.Client(timeout=60.0) as client:
+                resp = client.post(url, headers=headers, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                raw_text = data["choices"][0]["message"]["content"]
+                cleaned = self._clean_json_response(raw_text)
+                return AIArticleOutput.model_validate_json(cleaned)
+        except Exception as exc:
+            logger.warning("NVIDIA Nemotron call in AIService failed: %s", exc)
+            return None
 
     def generate_article(
         self,
@@ -46,6 +88,7 @@ class AIService:
         video_path: Optional[str],
         lens_context: Dict[str, Any],
         source_url: str,
+        provider: Optional[str] = None,
     ) -> AIArticleOutput:
         """Process multimodal media and Lens context to generate structured news article."""
         prompt = f"""
@@ -55,6 +98,16 @@ Google Lens Visual Clues & Reverse Search Context:
 
 Please analyze the provided media along with the search context above and produce the localized news article in strict JSON format.
 """
+        active_provider = (provider or settings.DEFAULT_LLM_PROVIDER).lower()
+
+        # If NVIDIA Nemotron selected
+        if "nvidia" in active_provider or "nemotron" in active_provider:
+            result = self._call_nvidia_nemotron(prompt)
+            if result:
+                logger.info("Successfully generated article via NVIDIA Nemotron.")
+                return result
+            logger.warning("NVIDIA Nemotron unavailable; falling back to Gemini / Antigravity...")
+
         # Try Antigravity SDK first, then google-generativeai / google-genai, with fallback
         try:
             from google.antigravity import Agent, LocalAgentConfig
@@ -103,6 +156,12 @@ Please analyze the provided media along with the search context above and produc
 
         except Exception as exc:
             logger.warning("Gemini API fallback execution encountered error: %s", exc)
+
+        # If Gemini was primary and failed, try NVIDIA Nemotron before dev fallback
+        if "nvidia" not in active_provider:
+            result = self._call_nvidia_nemotron(prompt)
+            if result:
+                return result
 
         # Graceful development fallback for offline testing/boilerplate validation
         logger.warning("Using fallback simulated AI response for development.")

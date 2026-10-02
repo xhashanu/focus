@@ -32,18 +32,25 @@ logger = logging.getLogger(__name__)
     retry_backoff_max=600,
     retry_jitter=True,
 )
-def process_news_link(self, url: str, auto_publish: Optional[bool] = None) -> Dict[str, Any]:
+def process_news_link(
+    self,
+    url: str,
+    auto_publish: Optional[bool] = None,
+    llm_provider: Optional[str] = None,
+) -> Dict[str, Any]:
     """Execute the end-to-end media acquisition, context gathering, and AI news curation pipeline.
 
     Args:
         url: The social media video URL to process.
         auto_publish: Override settings.AUTO_PUBLISH for this specific task.
                       None = use settings.AUTO_PUBLISH.
+        llm_provider: Override settings.DEFAULT_LLM_PROVIDER ('nvidia_nemotron' or 'gemini').
     """
     task_id = self.request.id
     should_auto_publish = auto_publish if auto_publish is not None else settings.AUTO_PUBLISH
     mode = "AUTONOMOUS" if should_auto_publish else "HUMAN-REVIEW"
-    logger.info("Executing process_news_link task %s for URL: %s (mode=%s)", task_id, url, mode)
+    active_provider = llm_provider or settings.DEFAULT_LLM_PROVIDER
+    logger.info("Executing process_news_link task %s for URL: %s (mode=%s, provider=%s)", task_id, url, mode, active_provider)
 
     # 1. Pipeline Start / Downloader
     self.update_state(
@@ -52,6 +59,7 @@ def process_news_link(self, url: str, auto_publish: Optional[bool] = None) -> Di
             "stage": "DOWNLOADING",
             "progress": 10,
             "mode": mode,
+            "provider": active_provider,
             "details": f"Acquiring video stream via yt-dlp from: {url}",
         },
     )
@@ -72,6 +80,7 @@ def process_news_link(self, url: str, auto_publish: Optional[bool] = None) -> Di
                 "stage": "EXTRACTING_MEDIA",
                 "progress": 25,
                 "mode": mode,
+                "provider": active_provider,
                 "details": "Extracting audio track and slicing representative keyframes...",
             },
         )
@@ -85,6 +94,7 @@ def process_news_link(self, url: str, auto_publish: Optional[bool] = None) -> Di
                 "stage": "SEARCHING_CONTEXT",
                 "progress": 40,
                 "mode": mode,
+                "provider": active_provider,
                 "details": "Reverse-searching keyframes on Google Lens to verify location and origin...",
             },
         )
@@ -99,11 +109,13 @@ def process_news_link(self, url: str, auto_publish: Optional[bool] = None) -> Di
             return _autonomous_pipeline(
                 self, task_id, url, db,
                 audio_path, video_path, keyframes, lens_context,
+                llm_provider=active_provider,
             )
         else:
             return _human_review_pipeline(
                 self, task_id, url, db,
                 audio_path, video_path, keyframes, lens_context,
+                llm_provider=active_provider,
             )
 
     except Exception as exc:
@@ -149,6 +161,7 @@ def process_news_link(self, url: str, auto_publish: Optional[bool] = None) -> Di
 def _human_review_pipeline(
     task, task_id, url, db,
     audio_path, video_path, keyframes, lens_context,
+    llm_provider: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Original flow: generate draft → persist for human editorial review."""
 
@@ -158,7 +171,8 @@ def _human_review_pipeline(
             "stage": "GENERATING_ARTICLE",
             "progress": 65,
             "mode": "HUMAN-REVIEW",
-            "details": "Synthesizing multimodal context into localized news draft...",
+            "provider": llm_provider or settings.DEFAULT_LLM_PROVIDER,
+            "details": f"Synthesizing multimodal context with {llm_provider or settings.DEFAULT_LLM_PROVIDER}...",
         },
     )
     ai_article = ai_service.generate_article(
@@ -166,6 +180,7 @@ def _human_review_pipeline(
         video_path=video_path,
         lens_context=lens_context,
         source_url=url,
+        provider=llm_provider,
     )
 
     task.update_state(
@@ -174,6 +189,7 @@ def _human_review_pipeline(
             "stage": "SAVING_DRAFT",
             "progress": 90,
             "mode": "HUMAN-REVIEW",
+            "provider": llm_provider or settings.DEFAULT_LLM_PROVIDER,
             "details": "Persisting draft for human review...",
         },
     )
@@ -205,6 +221,7 @@ def _human_review_pipeline(
         "draft_id": draft.id,
         "status": "COMPLETED",
         "mode": "HUMAN-REVIEW",
+        "provider": llm_provider or settings.DEFAULT_LLM_PROVIDER,
         "headline": draft.headline,
         "location": draft.location,
         "confidence_score": draft.confidence_score,
@@ -216,6 +233,7 @@ def _human_review_pipeline(
             "stage": "COMPLETED",
             "progress": 100,
             "mode": "HUMAN-REVIEW",
+            "provider": llm_provider or settings.DEFAULT_LLM_PROVIDER,
             "details": "News curation complete. Ready for human editorial review.",
             "result": result_payload,
         },
@@ -227,6 +245,7 @@ def _human_review_pipeline(
 def _autonomous_pipeline(
     task, task_id, url, db,
     audio_path, video_path, keyframes, lens_context,
+    llm_provider: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Autonomous flow: AI Curator → Publisher → Production database (no human review)."""
 
@@ -237,7 +256,8 @@ def _autonomous_pipeline(
             "stage": "AI_CURATING",
             "progress": 55,
             "mode": "AUTONOMOUS",
-            "details": "AI Curator generating production-ready article with full schema compliance...",
+            "provider": llm_provider or settings.DEFAULT_LLM_PROVIDER,
+            "details": f"AI Curator ({llm_provider or settings.DEFAULT_LLM_PROVIDER}) generating production-ready article with full schema compliance...",
         },
     )
     curated_article = ai_curator.curate(
@@ -246,6 +266,7 @@ def _autonomous_pipeline(
         keyframe_paths=keyframes,
         lens_context=lens_context,
         source_url=url,
+        provider=llm_provider,
     )
 
     # Step 4b: Save a local draft record for audit trail

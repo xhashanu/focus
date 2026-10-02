@@ -229,17 +229,40 @@ def fetch_draft_detail(base_url: str, draft_id: int) -> Optional[Dict[str, Any]]
         pass
     return None
 
-def trigger_curation(base_url: str, url: str, auto_publish: Optional[bool] = None) -> Optional[str]:
+def trigger_curation(
+    base_url: str,
+    url: str,
+    auto_publish: Optional[bool] = None,
+    llm_provider: Optional[str] = None,
+) -> Optional[str]:
     try:
         payload = {"url": url}
         if auto_publish is not None:
             payload["auto_publish"] = auto_publish
+        if llm_provider:
+            payload["llm_provider"] = llm_provider
         res = requests.post(f"{base_url}/api/v1/curate", json=payload, timeout=10)
         if res.status_code == 202:
             return res.json().get("task_id")
     except Exception as exc:
         st.error(f"Failed to submit URL: {exc}")
     return None
+
+def fetch_system_config(base_url: str) -> Optional[Dict[str, Any]]:
+    try:
+        res = requests.get(f"{base_url}/api/v1/system/config", timeout=4)
+        if res.status_code == 200:
+            return res.json()
+    except Exception:
+        pass
+    return None
+
+def update_system_config(base_url: str, data: Dict[str, Any]) -> bool:
+    try:
+        res = requests.post(f"{base_url}/api/v1/system/config", json=data, timeout=5)
+        return res.status_code == 200
+    except Exception:
+        return False
 
 def poll_task_status(base_url: str, task_id: str) -> Optional[Dict[str, Any]]:
     try:
@@ -313,16 +336,85 @@ with st.sidebar:
 
     st.divider()
 
+    # AI Model Switcher & API Configuration
+    st.markdown("#### 🤖 AI Model & APIs")
+    sys_config = fetch_system_config(api_url)
+    current_default_prov = (sys_config.get("default_llm_provider") or "nvidia_nemotron") if sys_config else "nvidia_nemotron"
+
+    model_idx = 0 if current_default_prov == "nvidia_nemotron" else 1
+    chosen_sidebar_model = st.radio(
+        "Active LLM Provider",
+        options=["🤖 NVIDIA Nemotron", "🧠 Gemini 1.5 Pro"],
+        index=model_idx,
+        help="Model used for AI curation and schema hydration.",
+    )
+    active_prov_code = "nvidia_nemotron" if "NVIDIA" in chosen_sidebar_model else "gemini"
+
+    # Quick Switch button if radio changed from saved setting
+    if sys_config and active_prov_code != sys_config.get("default_llm_provider"):
+        if st.button("⚡ Set as Default Model", use_container_width=True):
+            if update_system_config(api_url, {"default_llm_provider": active_prov_code}):
+                st.toast(f"Active model switched to {chosen_sidebar_model}!")
+                st.rerun()
+
+    # API Keys Configuration Expander
+    with st.expander("🔑 Manage API Keys (Free)", expanded=False):
+        st.markdown(
+            """
+            <div style='font-size:0.75rem; color:#94A3B8; margin-bottom:8px;'>
+            Get free keys below:<br>
+            • <a href='https://build.nvidia.com/nvidia/nemotron-3-ultra-550b-a55b' target='_blank' style='color:#38BDF8;'>NVIDIA Nemotron (Free API)</a><br>
+            • <a href='https://serpapi.com/manage-api-key' target='_blank' style='color:#38BDF8;'>SerpApi Google Lens (Free Tier)</a><br>
+            • <a href='https://aistudio.google.com/' target='_blank' style='color:#38BDF8;'>Google Gemini API</a>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        nv_key_input = st.text_input(
+            "NVIDIA API Key",
+            type="password",
+            placeholder=sys_config.get("nvidia_api_key_masked", "Enter nvapi-...") if sys_config else "Enter key...",
+            help="Get free trial credits from https://build.nvidia.com/nvidia/nemotron-3-ultra-550b-a55b",
+        )
+        serp_key_input = st.text_input(
+            "SerpApi Key (Google Lens)",
+            type="password",
+            placeholder=sys_config.get("serpapi_api_key_masked", "Enter SerpApi key...") if sys_config else "Enter key...",
+            help="Free key from https://serpapi.com/manage-api-key",
+        )
+        gem_key_input = st.text_input(
+            "Gemini API Key",
+            type="password",
+            placeholder=sys_config.get("gemini_api_key_masked", "Enter Gemini key...") if sys_config else "Enter key...",
+        )
+        if st.button("💾 Save API Credentials", use_container_width=True):
+            update_data = {"default_llm_provider": active_prov_code}
+            if nv_key_input.strip():
+                update_data["nvidia_api_key"] = nv_key_input.strip()
+            if serp_key_input.strip():
+                update_data["serpapi_api_key"] = serp_key_input.strip()
+            if gem_key_input.strip():
+                update_data["gemini_api_key"] = gem_key_input.strip()
+            if update_system_config(api_url, update_data):
+                st.success("API credentials updated successfully!")
+                st.rerun()
+            else:
+                st.error("Failed to update credentials.")
+
+    st.divider()
+
     # Integrations status indicators
     st.markdown("#### 🔌 Service Links")
     if stats:
         integ = stats.get("integrations", {})
-        c_gem = "🟢" if integ.get("gemini_configured") else "🟡"
+        c_nv = "🟢" if integ.get("nvidia_configured") else "🟡"
         c_lens = "🟢" if integ.get("serpapi_configured") else "🟡"
+        c_gem = "🟢" if integ.get("gemini_configured") else "🟡"
         c_lar = "🟢" if integ.get("laravel_configured") else "🟡"
 
-        st.markdown(f"{c_gem} **Gemini / Antigravity AI**")
+        st.markdown(f"{c_nv} **NVIDIA Nemotron NIM**")
         st.markdown(f"{c_lens} **SerpApi (Google Lens)**")
+        st.markdown(f"{c_gem} **Gemini / Antigravity AI**")
         st.markdown(f"{c_lar} **Live Laravel Webhook**")
     else:
         st.caption("Connect backend to view active integrations.")
@@ -389,7 +481,7 @@ with tab_live:
 
     url_input_val = preset_url if preset_url else ""
 
-    col_inp, col_mode, col_act = st.columns([5, 3, 2], gap="medium")
+    col_inp, col_mode, col_llm, col_act = st.columns([4, 3, 3, 2], gap="small")
     with col_inp:
         video_url = st.text_input(
             "Video URL",
@@ -404,6 +496,15 @@ with tab_live:
             index=0,
             label_visibility="collapsed",
         )
+    with col_llm:
+        cur_def = (sys_config.get("default_llm_provider") or "nvidia_nemotron") if sys_config else "nvidia_nemotron"
+        prov_init_idx = 0 if cur_def == "nvidia_nemotron" else 1
+        llm_choice = st.selectbox(
+            "AI Engine",
+            options=["🤖 NVIDIA Nemotron", "🧠 Gemini 1.5 Pro"],
+            index=prov_init_idx,
+            label_visibility="collapsed",
+        )
     with col_act:
         launch_btn = st.button("⚡ Run AI Pipeline", type="primary", use_container_width=True)
 
@@ -412,12 +513,14 @@ with tab_live:
             st.error("Please enter a valid HTTP/HTTPS social media link.")
         else:
             is_auto = mode_choice.startswith("🚀")
-            task_id = trigger_curation(api_url, video_url, auto_publish=is_auto)
+            chosen_prov = "nvidia_nemotron" if "NVIDIA" in llm_choice else "gemini"
+            task_id = trigger_curation(api_url, video_url, auto_publish=is_auto, llm_provider=chosen_prov)
             if task_id:
                 st.session_state.active_task_id = task_id
                 st.session_state.task_logs = [
                     f"[{datetime.now().strftime('%H:%M:%S')}] Task dispatched with ID: {task_id}",
                     f"[{datetime.now().strftime('%H:%M:%S')}] Mode: {'AUTONOMOUS (Live DB Publish)' if is_auto else 'HUMAN-REVIEW (Editorial Draft)'}",
+                    f"[{datetime.now().strftime('%H:%M:%S')}] AI Engine: {'NVIDIA Nemotron-3-Ultra-550B' if chosen_prov == 'nvidia_nemotron' else 'Google Gemini 1.5 Pro'}",
                     f"[{datetime.now().strftime('%H:%M:%S')}] Target Source: {video_url}",
                 ]
                 st.rerun()
@@ -479,18 +582,21 @@ with tab_live:
             s2_cls, s2_ico = get_step_class("EXTRACTING_MEDIA", stage, prog, 35)
             s3_cls, s3_ico = get_step_class("SEARCHING_CONTEXT", stage, prog, 55)
 
+            task_prov = task_info.get("provider", "") or (sys_config.get("default_llm_provider") if sys_config else "nvidia_nemotron")
+            prov_title = "NVIDIA Nemotron" if "nvidia" in task_prov or "nemotron" in task_prov else "Gemini 1.5 Pro"
+
             if is_autonomous:
                 s4_cls, s4_ico = get_step_class("AI_CURATING", stage, prog, 70)
                 s5_cls, s5_ico = get_step_class("PUBLISHING", stage, prog, 85)
-                s4_label = "<strong>4. AI Curation:</strong> Gemini 1.5 Pro structured schema hydration"
+                s4_label = f"<strong>4. AI Curation ({prov_title}):</strong> Structured schema hydration & entity synthesis"
                 s5_label = "<strong>5. Autonomous Publishing:</strong> Laravel MySQL API insertion & alerts"
-                mode_badge = "<span class='badge badge-published' style='margin-left: 8px;'>AUTONOMOUS</span>"
+                mode_badge = f"<span class='badge badge-published' style='margin-left: 8px;'>AUTONOMOUS • {prov_title.split()[0]}</span>"
             else:
                 s4_cls, s4_ico = get_step_class("GENERATING_ARTICLE", stage, prog, 75)
                 s5_cls, s5_ico = get_step_class("SAVING_DRAFT", stage, prog, 90)
-                s4_label = "<strong>4. AI Generation:</strong> Gemini multimodal localized synthesis"
+                s4_label = f"<strong>4. AI Generation ({prov_title}):</strong> Multimodal localized draft synthesis"
                 s5_label = "<strong>5. Database Persistence:</strong> SQLite review queue storage"
-                mode_badge = "<span class='badge badge-pending' style='margin-left: 8px;'>HUMAN-REVIEW</span>"
+                mode_badge = f"<span class='badge badge-pending' style='margin-left: 8px;'>HUMAN-REVIEW • {prov_title.split()[0]}</span>"
 
             stages_html = f"""
             <div class="glass-card" style="padding: 16px;">

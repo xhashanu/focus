@@ -23,18 +23,25 @@ def curate_video_link(request: CurateRequest) -> CurateResponse:
         )
 
     try:
-        task = process_news_link.delay(url_str, auto_publish=request.auto_publish)
-        logger.info("Dispatched curation task %s for URL: %s (auto_publish=%s)", task.id, url_str, request.auto_publish)
-        effective_mode = "AUTONOMOUS" if (request.auto_publish is True or (request.auto_publish is None and False)) else "HUMAN-REVIEW"
         from app.config import settings
-        if request.auto_publish is None:
-            effective_mode = "AUTONOMOUS" if settings.AUTO_PUBLISH else "HUMAN-REVIEW"
+        effective_provider = request.llm_provider or settings.DEFAULT_LLM_PROVIDER
+        task = process_news_link.delay(
+            url_str,
+            auto_publish=request.auto_publish,
+            llm_provider=effective_provider,
+        )
+        logger.info(
+            "Dispatched curation task %s for URL: %s (auto_publish=%s, provider=%s)",
+            task.id, url_str, request.auto_publish, effective_provider,
+        )
+        effective_mode = "AUTONOMOUS" if (request.auto_publish is True or (request.auto_publish is None and settings.AUTO_PUBLISH)) else "HUMAN-REVIEW"
         return CurateResponse(
             task_id=task.id,
             status="ACCEPTED",
-            message=f"Media acquisition and AI news curation pipeline dispatched ({effective_mode}).",
+            message=f"Media acquisition and AI news curation pipeline dispatched ({effective_mode}, model: {effective_provider}).",
             source_url=url_str,
             mode=effective_mode,
+            llm_provider=effective_provider,
         )
     except Exception as exc:
         logger.error("Failed to enqueue curation task for %s: %s", url_str, exc)
