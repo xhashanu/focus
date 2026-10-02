@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel, HttpUrl, Field
 
 
@@ -21,4 +21,18 @@ class CurateResponse(BaseModel):
     source_url: str = Field(..., description="The submitted video URL")
     mode: str = Field(default="DEFAULT", description="Execution mode: AUTONOMOUS or HUMAN-REVIEW")
     llm_provider: Optional[str] = Field(default=None, description="Selected LLM provider")
+
+
+class BatchCurateRequest(BaseModel):
+    urls: List[str] = Field(..., description="List of video URLs to process in batch")
+    auto_publish: Optional[bool] = Field(default=None, description="Override auto-publish for all URLs")
+    llm_provider: Optional[str] = Field(default=None, description="LLM provider for all URLs")
+
+
+class BatchCurateResponse(BaseModel):
+    total: int = Field(..., description="Total number of URLs submitted")
+    accepted: int = Field(0, description="Number of URLs accepted and queued")
+    rejected: int = Field(0, description="Number of URLs rejected (invalid)")
+    tasks: List[CurateResponse] = Field(default_factory=list, description="Individual task responses")
+    rejected_urls: List[str] = Field(default_factory=list, description="List of rejected URLs")
 
